@@ -1,0 +1,8 @@
+type,id,name,x,y,district,beds,street,house_number,postal_code,gisid,source_layer
+spa,vabali,vabali,795634.64,5828763.74,001_Mitte,,,,,,
+spa,liquidrom,liquidrom,797312.78,5825825.94,002_Friedrichshain-Kreuzberg,,,,,,
+spa,meridian,meridian,784623.35,5828694.12,005_Spandau,,,,,,
+spa,aspria,aspria,791428.73,5825366.54,004_Charlottenburg-Wilmersdorf,,,,,,
+spa,hamam,hamam,800182.05,5825953.76,002_Friedrichshain-Kreuzberg,,,,,,
+spa,saunabad,saunabad,800320.0,5829910.0,003_Pankow,,,,,,
+spa,kristall,kristall,786190.0,5791400.0,NA (Ludwigsfelde),,,,,,

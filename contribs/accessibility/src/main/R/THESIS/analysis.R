@@ -17,9 +17,10 @@ suppressPackageStartupMessages({
 # ==========================================================
 
 base_dir     <- "."
+opportunity  <- "hospital"   # "hospital" or "spa" (matches OpportunityType in RunPersonBasedAccBerlin)
 input_dir    <- file.path(base_dir, "input")
-hospital_dir <- file.path(input_dir, "hospital")
-output_dir   <- file.path(base_dir, "output")
+hospital_dir <- file.path(input_dir, opportunity)
+output_dir   <- file.path(base_dir, "output", opportunity)
 
 beta <- 1
 
@@ -564,5 +565,421 @@ write_csv(
   summary_outcome_income,
   file.path(output_dir, "summary_outcome_by_income.csv")
 )
+
+# ==========================================================
+# Map of spa and hospital locations
+# ==========================================================
+# locations.csv is written by RunPersonBasedAccBerlin (EPSG:25832),
+# one row per location with type = "spa" or "hospital".
+
+locations_csv <- file.path(hospital_dir, "locations.csv")
+if (!file.exists(locations_csv)) {
+  locations_csv <- file.path(input_dir, "locations.csv")
+}
+map_dir <- file.path(base_dir, "output/maps", opportunity)
+dir.create(map_dir, recursive = TRUE, showWarnings = FALSE)
+
+locations_sf <- read_csv(locations_csv, show_col_types = FALSE) %>%
+  filter(!is.na(x), !is.na(y)) %>%
+  mutate(
+    type = factor(
+      type,
+      levels = c("hospital", "spa"),
+      labels = c("Hospital", "Spa")
+    )
+  ) %>%
+  st_as_sf(
+    coords = c("x", "y"),
+    crs = 25832
+  )
+
+# Berlin extent, so the map is not zoomed out by locations outside the city
+# (e.g. the spa in Ludwigsfelde).
+berlin_bbox <- st_bbox(berlin_sf)
+
+# S-Bahn Ring overlay. The GeoJSON is in WGS84 lon/lat (and carries no CRS
+# member), so it must be transformed to the map CRS before plotting;
+# fill = NA keeps it as an outline instead of hiding the districts below.
+ring_sf <- st_read(
+  file.path(input_dir, "Berlin shapefiles", "Berlin_sbahn_ring.geojson"),
+  quiet = TRUE
+)
+if (is.na(st_crs(ring_sf))) st_crs(ring_sf) <- 4326
+ring_sf <- st_transform(ring_sf, 25832)
+
+plot_locations_map <- function(locations,
+                               title = "Spa and hospital locations in Berlin",
+                               show_spa_labels = FALSE,
+                               show_ring = TRUE) {
+  p <- ggplot() +
+    geom_sf(
+      data = berlin_sf,
+      fill = "grey95",
+      color = "grey60",
+      linewidth = 0.3
+    )
+
+  if (show_ring) {
+    p <- p +
+      geom_sf(
+        data = ring_sf,
+        fill = NA,
+        color = "#6a3d9a",
+        linetype = "dashed",
+        linewidth = 0.6
+      )
+  }
+
+  p <- p +
+    geom_sf(
+      data = locations,
+      aes(color = type, shape = type),
+      size = 2.2,
+      alpha = 0.85
+    ) +
+    scale_color_manual(
+      values = c(Hospital = "#1f78b4", Spa = "#e31a1c"),
+      drop = FALSE
+    ) +
+    scale_shape_manual(
+      values = c(Hospital = 16, Spa = 17),
+      drop = FALSE
+    ) +
+    coord_sf(
+      xlim = c(berlin_bbox["xmin"], berlin_bbox["xmax"]),
+      ylim = c(berlin_bbox["ymin"], berlin_bbox["ymax"])
+    ) +
+    labs(
+      title = title,
+      color = NULL,
+      shape = NULL
+    ) +
+    theme_void() +
+    theme(
+      legend.position = "bottom",
+      plot.title = element_text(face = "bold", hjust = 0.5)
+    )
+
+  if (show_spa_labels) {
+    p <- p +
+      geom_sf_text(
+        data = filter(locations, type == "Spa"),
+        aes(label = name),
+        size = 3,
+        vjust = -1,
+        check_overlap = FALSE,
+        color = "grey20"
+      )
+  }
+
+  p
+}
+
+# Combined map, spa names labelled
+map_locations <- plot_locations_map(
+  locations_sf,
+  title = "Spa and hospital locations in Berlin",
+  show_spa_labels = TRUE
+)
+ggsave(
+  file.path(map_dir, "map_spa_hospital_locations.png"),
+  map_locations,
+  dpi = 300,
+  width = 8,
+  height = 6.5,
+  bg = "white"
+)
+
+# Spas only
+map_spas <- plot_locations_map(
+  filter(locations_sf, type == "Spa"),
+  title = "Spa locations in Berlin",
+  show_spa_labels = TRUE
+)
+ggsave(
+  file.path(map_dir, "map_spa_locations.png"),
+  map_spas,
+  dpi = 300,
+  width = 8,
+  height = 6.5,
+  bg = "white"
+)
+
+# Hospitals only
+map_hospitals <- plot_locations_map(
+  filter(locations_sf, type == "Hospital"),
+  title = "Hospital locations in Berlin"
+)
+ggsave(
+  file.path(map_dir, "map_hospital_locations.png"),
+  map_hospitals,
+  dpi = 300,
+  width = 8,
+  height = 6.5,
+  bg = "white"
+)
+
+# ==========================================================
+# Person-level base vs policy comparison
+# ==========================================================
+# persons_<mode>_<scenario>.csv are written by RunPersonBasedAccBerlin:
+# personId, homeX, homeY, accessibility (rawSum, EPSG:25832).
+# One file per run, so base and policy are joined on personId.
+
+read_persons <- function(mode, scenario) {
+  path <- file.path(
+    hospital_dir,
+    paste0("persons_", mode, "_", scenario, ".csv")
+  )
+
+  if (!file.exists(path)) {
+    message("persons file not found, skipping: ", path)
+    return(NULL)
+  }
+
+  read_csv(path, show_col_types = FALSE)
+}
+
+# Reads one mode's accessibility for a scenario: the persons file if it exists,
+# otherwise the matching pbAcc file. Files are looked up in input/<opportunity>/
+# first, then in the legacy input/ directory. Modes that are unchanged by the
+# policy reuse their base file when the policy file is missing.
+policy_unchanged_modes <- c("pt", "teleportedWalk")
+
+read_mode_accessibility <- function(mode, scenario) {
+  candidates <- c(
+    file.path(hospital_dir, paste0("persons_", mode, "_", scenario, ".csv")),
+    file.path(hospital_dir, paste0("pbAcc_", mode, "_", scenario, "_rawSum.csv")),
+    file.path(input_dir, paste0("persons_", mode, "_", scenario, ".csv")),
+    file.path(input_dir, paste0("pbAcc_", mode, "_", scenario, "_rawSum.csv"))
+  )
+
+  path <- Find(file.exists, candidates)
+
+  if (!is.null(path)) {
+    if (!startsWith(path, hospital_dir)) {
+      message(
+        "Using ", basename(path), " from input/ (not found in ",
+        basename(hospital_dir), "/)"
+      )
+    }
+    # legacy files may carry extra columns (suppress the resulting readr warning)
+    return(suppressWarnings(read_csv(path, show_col_types = FALSE)))
+  }
+
+  if (scenario != "base" && mode %in% policy_unchanged_modes) {
+    message(
+      "No ", mode, " ", scenario, " data; using base (",
+      mode, " is unchanged by the policy)"
+    )
+    return(read_mode_accessibility(mode, "base"))
+  }
+
+  message("No accessibility data for mode '", mode, "', scenario '", scenario, "'.")
+  NULL
+}
+
+# Multimodal accessibility = sum of the three modes' raw sums per person,
+# the same definition as mm_logSum in the accessibility calculations above.
+mm_modes <- c("teleportedWalk", "pt", "car")
+
+read_persons_mm <- function(scenario) {
+  first <- read_mode_accessibility(mm_modes[1], scenario)
+  if (is.null(first)) {
+    return(NULL)
+  }
+
+  combined <- first %>% select(personId, homeX, homeY, accessibility)
+  names(combined)[4] <- mm_modes[1]
+
+  for (m in mm_modes[-1]) {
+    d <- read_mode_accessibility(m, scenario)
+    if (is.null(d)) {
+      return(NULL)
+    }
+    d <- d %>% select(personId, accessibility)
+    names(d)[2] <- m
+    combined <- inner_join(combined, d, by = "personId")
+  }
+
+  combined %>%
+    mutate(
+      accessibility = .data[[mm_modes[1]]] +
+        .data[[mm_modes[2]]] +
+        .data[[mm_modes[3]]]
+    ) %>%
+    select(personId, homeX, homeY, accessibility)
+}
+
+join_base_policy <- function(base_df, policy_df) {
+  inner_join(
+    base_df %>%
+      select(personId, homeX, homeY, accessibility_base = accessibility),
+    policy_df %>%
+      select(personId, accessibility_policy = accessibility),
+    by = "personId"
+  ) %>%
+    mutate(
+      logSum_base = if_else(
+        accessibility_base > 0,
+        log(accessibility_base) / beta,
+        NA_real_
+      ),
+      logSum_policy = if_else(
+        accessibility_policy > 0,
+        log(accessibility_policy) / beta,
+        NA_real_
+      ),
+      delta = logSum_policy - logSum_base,
+      delta_raw = accessibility_policy - accessibility_base,
+      outcome = case_when(
+        delta > 0 ~ "Winner",
+        delta < 0 ~ "Loser",
+        delta == 0 ~ "No change",
+        TRUE ~ NA_character_
+      )
+    )
+}
+
+join_persons <- function(mode, base = "base", policy = "policy") {
+  base_df <- read_mode_accessibility(mode, base)
+  policy_df <- read_mode_accessibility(mode, policy)
+
+  if (is.null(base_df) || is.null(policy_df)) {
+    return(NULL)
+  }
+
+  join_base_policy(base_df, policy_df)
+}
+
+join_persons_mm <- function(base = "base", policy = "policy") {
+  base_df <- read_persons_mm(base)
+  policy_df <- read_persons_mm(policy)
+
+  if (is.null(base_df) || is.null(policy_df)) {
+    return(NULL)
+  }
+
+  join_base_policy(base_df, policy_df)
+}
+
+# Car base vs policy (same function works for "pt" and "teleportedWalk")
+car_persons <- join_persons("car")
+
+if (!is.null(car_persons)) {
+  car_persons
+  write_csv(
+    car_persons,
+    file.path(output_dir, "persons_car_base_vs_policy.csv")
+  )
+}
+
+# ==========================================================
+# Person-level maps: policy - base accessibility change
+# ==========================================================
+# One point per person at their home location, coloured by the signed
+# accessibility change between the policy and base scenario (log scale,
+# i.e. delta from join_persons()). Works for any mode with both person files.
+
+plot_person_delta_map <- function(mode,
+                                  base = "base",
+                                  policy = "policy",
+                                  measure = c("delta", "delta_raw")) {
+  measure <- match.arg(measure)
+  persons <- if (identical(mode, "mm")) {
+    join_persons_mm(base, policy)
+  } else {
+    join_persons(mode, base, policy)
+  }
+
+  if (is.null(persons)) {
+    message("No persons data for mode '", mode, "', skipping map.")
+    return(NULL)
+  }
+
+  persons_sf <- persons %>%
+    filter(!is.na(.data[[measure]]), !is.na(homeX), !is.na(homeY)) %>%
+    st_as_sf(
+      coords = c("homeX", "homeY"),
+      crs = 25832
+    )
+
+  # capped colour scale: most deltas are small and negative, so a wide range
+  # would hide them; values beyond the cap are squished to the end colours
+  colour_limit <- 1
+
+  legend_title <- if (measure == "delta") {
+    "Δ accessibility\n(policy - base, utils)"
+  } else {
+    "Δ accessibility\n(policy - base, rawSum)"
+  }
+
+  ggplot() +
+    geom_sf(
+      data = berlin_sf,
+      fill = "grey95",
+      color = "grey60",
+      linewidth = 0.3
+    ) +
+    geom_sf(
+      data = ring_sf,
+      fill = NA,
+      color = "grey40",
+      linetype = "dashed",
+      linewidth = 0.4
+    ) +
+    geom_sf(
+      data = persons_sf,
+      aes(color = .data[[measure]]),
+      size = 0.4,
+      alpha = 0.7
+    ) +
+    scale_color_gradient2(
+      low = "#b2182b",
+      mid = "grey92",
+      high = "#2166ac",
+      midpoint = 0,
+      limits = c(-colour_limit, colour_limit),
+      oob = scales::squish,
+      name = legend_title
+    ) +
+    coord_sf(
+      xlim = c(berlin_bbox["xmin"], berlin_bbox["xmax"]),
+      ylim = c(berlin_bbox["ymin"], berlin_bbox["ymax"])
+    ) +
+    labs(
+      title = paste0(
+        switch(
+          mode,
+          mm = "Multimodal",
+          pt = "Public transport",
+          teleportedWalk = "Walking",
+          tools::toTitleCase(mode)
+        ),
+        " accessibility change: policy - base"
+      )
+    ) +
+    theme_void() +
+    theme(
+      legend.position = "right",
+      legend.key.height = unit(1.5, "cm"),
+      plot.title = element_text(face = "bold", hjust = 0.5)
+    )
+}
+
+for (mode in c("car", "pt", "teleportedWalk", "mm")) {
+  person_delta_map <- plot_person_delta_map(mode)
+
+  if (!is.null(person_delta_map)) {
+    ggsave(
+      file.path(map_dir, paste0("map_persons_", mode, "_policy_minus_base.png")),
+      person_delta_map,
+      dpi = 300,
+      width = 8,
+      height = 6.5,
+      bg = "white"
+    )
+  }
+}
 
 

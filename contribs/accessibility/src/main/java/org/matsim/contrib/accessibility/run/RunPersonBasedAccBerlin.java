@@ -39,7 +39,7 @@ import java.util.Map;
 
 public class RunPersonBasedAccBerlin {
 
-	private static final String OUTPUT_ROOT = "../public-svn/matsim/scenarios/countries/de/berlin/projects/fabilut/output-1pct/";
+	private static final String OUTPUT_ROOT = "../../public-svn/matsim/scenarios/countries/de/berlin/projects/fabilut/output-1pct/";
 	private static final String OUTPUT_BASE = OUTPUT_ROOT + "base/";
 	private static final String OUTPUT_POLICY = OUTPUT_ROOT + "policy/";
 	private static String OUTPUT_DIR;
@@ -50,7 +50,7 @@ public class RunPersonBasedAccBerlin {
 	private static final String HOSPITAL_ACTIVITY_TYPE = "hospital";
 
 //	Hospital accessibility results are written into a dedicated folder of the R analysis input directory.
-	private static final String HOSPITAL_OUTPUT_DIR = "contribs/accessibility/src/main/R/THESIS/input/hospital/";
+	private static final String R_INPUT_DIR = "contribs/accessibility/src/main/R/THESIS/input/";
 
 	private static final String CRS = "EPSG:25832";
 
@@ -60,15 +60,38 @@ public class RunPersonBasedAccBerlin {
 
 	private enum RunScenario {base, policy}
 
+	private enum OpportunityType {
+		hospital("hospital"),
+		spa("spa");
+
+		private final String activityType;
+
+		OpportunityType(String activityType) {
+			this.activityType = activityType;
+		}
+
+		String activityType() {
+			return activityType;
+		}
+
+		String outputDir() {
+			return R_INPUT_DIR + name() + "/";
+		}
+	}
+
 	public static void main(String[] args) {
 //		== Run options ==
 		boolean personBased = true; //todo select accessibility measure (true for person-based/false for location-based)
-		RunScenario runScenario = RunScenario.policy; //todo select scenario (base/policy)
-		Modes4Accessibility targetMode = Modes4Accessibility.car; //todo select transport mode (car/pt/teleportedWalk)
+		RunScenario runScenario = RunScenario.base; //todo select scenario (base/policy)
+		Modes4Accessibility targetMode = Modes4Accessibility.pt; //todo select transport mode (car/pt/teleportedWalk)
+		OpportunityType opportunity = OpportunityType.spa; //todo select opportunity type (hospital/spa)
 		AccessibilityConfigGroup.AccessibilityMeasureType measureType = AccessibilityConfigGroup.AccessibilityMeasureType.rawSum; //todo select measure type (logSum/rawSum, rawSum for multimodal R analysis)
 
 		OUTPUT_DIR = OUTPUT_ROOT + runScenario + "/";
-		loadFiles(personBased, targetMode, measureType);
+		loadFiles(personBased, targetMode, measureType, opportunity);
+
+//		== Write spa/hospital locations for mapping in R ==
+		writeLocationsCSV(opportunity.outputDir() + "locations.csv");
 
 
 //		== Calculate accessibility ==
@@ -83,9 +106,8 @@ public class RunPersonBasedAccBerlin {
 			measureType
 		);
 
-		AccessibilityFromEvents.Builder builder = new AccessibilityFromEvents.Builder(scenario, eventsFile, List.of(HOSPITAL_ACTIVITY_TYPE));
-//		Spa-based reference run:
-//		AccessibilityFromEvents.Builder builder = new AccessibilityFromEvents.Builder(scenario, eventsFile, List.of("spa"));
+		AccessibilityFromEvents.Builder builder = new AccessibilityFromEvents.Builder(
+			scenario, eventsFile, List.of(opportunity.activityType()));
 
 		PersonBasedResultsComparator dataListener = null;
 		if (personBased) {
@@ -101,11 +123,15 @@ public class RunPersonBasedAccBerlin {
 
 		if (personBased){
 			Map<Tuple<Person, Double>, Map<String, Double>> accessibilitiesMap = dataListener.getAccessibilitiesMap();
-			writeCSV(accessibilitiesMap, HOSPITAL_OUTPUT_DIR + "pbAcc_" + targetMode + "_" + runScenario + "_" + measureType + ".csv");
+			String outputDir = opportunity.outputDir();
+			writeCSV(accessibilitiesMap, outputDir + "pbAcc_" + targetMode + "_" + runScenario + "_" + measureType + ".csv");
+			writePersonsCSV(accessibilitiesMap, outputDir + "persons_" + targetMode + "_" + runScenario + ".csv");
 		}
 	}
 
-	private static void loadFiles(boolean personBased, Modes4Accessibility targetMode, AccessibilityConfigGroup.AccessibilityMeasureType measureType) {
+	private static void loadFiles(boolean personBased, Modes4Accessibility targetMode,
+	                              AccessibilityConfigGroup.AccessibilityMeasureType measureType,
+	                              OpportunityType opportunity) {
 
 //		== Input Files ==
 		String networkFile 			= OUTPUT_DIR + "berlin-v6.3.output_network.xml.gz";
@@ -163,20 +189,12 @@ public class RunPersonBasedAccBerlin {
 		ActivityFacilities activityFacilities = scenario.getActivityFacilities();
 		ActivityFacilitiesFactory af = activityFacilities.getFactory();
 
-//		--- Hospital opportunities (active) ---
-		ActivityOption aoHospital = af.createActivityOption(HOSPITAL_ACTIVITY_TYPE);
-		addHospitals(activityFacilities, af, aoHospital);
-
-//		--- Spa opportunities (kept for later refactoring) ---
-//		ActivityOption aoSpa = af.createActivityOption("spa");
-//
-//		addFacility(activityFacilities, af, aoSpa, "vabali", 795634.64, 5828763.74);//001_Mitte
-//		addFacility(activityFacilities, af, aoSpa, "liquidrom", 797312.78, 5825825.94);//002_Friedrichshain-Kreuzberg
-//		addFacility(activityFacilities, af, aoSpa, "meridian", 784623.35, 5828694.12);//005_Spandau
-//		addFacility(activityFacilities, af, aoSpa, "aspria", 791428.73, 5825366.54);//004_Charlottenburg-Wilmersdorf
-//		addFacility(activityFacilities, af, aoSpa, "hamam", 800182.05, 5825953.76);//002_Friedrichshain-Kreuzberg
-//		addFacility(activityFacilities, af, aoSpa, "saunabad", 800320.0, 5829910.0);//003_Pankow
-//		addFacility(activityFacilities, af, aoSpa, "kristall", 786190.0, 5791400.0);//NA (Ludwigsfelde)
+//		--- Opportunities (hospital or spa, selected by OpportunityType) ---
+		ActivityOption activityOption = af.createActivityOption(opportunity.activityType());
+		switch (opportunity) {
+			case hospital -> addHospitals(activityFacilities, af, activityOption);
+			case spa -> addSpas(activityFacilities, af, activityOption);
+		}
 
 
 //		== Assigning home coords for each person ==
@@ -248,20 +266,20 @@ public class RunPersonBasedAccBerlin {
 	}
 
 //	Kept for the spa-based reference run; uncomment together with the spa block in loadFiles().
-//	private static void addFacility(
-//		ActivityFacilities facilities,
-//		ActivityFacilitiesFactory factory,
-//		ActivityOption activityOption,
-//		String id,
-//		double x,
-//		double y){
-//		ActivityFacility facility = factory.createActivityFacility(
-//			Id.create(id, ActivityFacility.class),
-//			new Coord(x, y)
-//		);
-//		facility.addActivityOption(activityOption);
-//		facilities.addActivityFacility(facility);
-//	}
+	private static void addSpas(
+		ActivityFacilities facilities,
+		ActivityFacilitiesFactory factory,
+		ActivityOption activityOption){
+		for (Spa spa : SPAS) {
+			ActivityFacility facility = factory.createActivityFacility(
+				Id.create(spa.name(), ActivityFacility.class),
+				new Coord(spa.x(), spa.y())
+			);
+			facility.addActivityOption(activityOption);
+			facilities.addActivityFacility(facility);
+		}
+		LOG.info("Added {} spas as accessibility opportunities", SPAS.size());
+	}
 
 	private static class PersonBasedResultsComparator implements PersonDataExchangeInterface {
 		private final Map<Tuple<Person, Double>, Map<String,Double>> accessibilitiesMap = new HashMap<>() ;
@@ -328,8 +346,106 @@ public class RunPersonBasedAccBerlin {
 		LOG.info("Custom CSV written to {}", csvFile);
 	}
 
+	/**
+	 * Writes one row per person and mode with their home coordinates and accessibility (EPSG:25832).
+	 * The file name encodes the mode and scenario (base/policy), since each run computes exactly one of each.
+	 */
+	private static void writePersonsCSV(Map<Tuple<Person, Double>, Map<String, Double>> accessibilitiesMap,
+	                                    String csvFile) {
+		new File(csvFile).getParentFile().mkdirs();
+		int rows = 0;
+		try (FileWriter writer = new FileWriter(csvFile)) {
+			writer.write("personId,homeX,homeY,accessibility\n");
+
+			for (var entry : accessibilitiesMap.entrySet()) {
+				Person person = entry.getKey().getFirst();
+				Object homeX = person.getAttributes().getAttribute("homeX");
+				Object homeY = person.getAttributes().getAttribute("homeY");
+
+				for (Map.Entry<String, Double> modeAcc : entry.getValue().entrySet()) {
+					writer.write(person.getId() + ","
+						+ (homeX != null ? homeX : "") + ","
+						+ (homeY != null ? homeY : "") + ","
+						+ modeAcc.getValue() + "\n");
+					rows++;
+				}
+			}
+		} catch (IOException e) {
+			throw new RuntimeException("Error writing persons CSV", e);
+		}
+		LOG.info("Persons CSV ({} rows) written to {}", rows, csvFile);
+	}
+
+	/**
+	 * Writes spa and hospital locations (EPSG:25832) to a single CSV for mapping in R.
+	 * One row per location, with a {@code type} column to distinguish spas from hospitals.
+	 */
+	private static void writeLocationsCSV(String csvFile) {
+		new File(csvFile).getParentFile().mkdirs();
+		try (FileWriter writer = new FileWriter(csvFile)) {
+			writer.write("type,id,name,x,y,district,beds,street,house_number,postal_code,gisid,source_layer\n");
+
+			for (Spa spa : SPAS) {
+				writer.write(String.join(",",
+					csv("spa"),
+					csv(spa.name()),
+					csv(spa.name()),
+					Double.toString(spa.x()),
+					Double.toString(spa.y()),
+					csv(spa.district()),
+					"", "", "", "", "", ""
+				) + "\n");
+			}
+
+			for (Hospital hospital : hospitalLocations) {
+				Map<String, String> attributes = hospital.attributes();
+				writer.write(String.join(",",
+					csv("hospital"),
+					csv(hospital.id()),
+					csv(hospital.name()),
+					Double.toString(hospital.x()),
+					Double.toString(hospital.y()),
+					csv(attributes.getOrDefault("district", "")),
+					csv(attributes.getOrDefault("beds", "")),
+					csv(attributes.getOrDefault("street", "")),
+					csv(attributes.getOrDefault("house_number", "")),
+					csv(attributes.getOrDefault("postal_code", "")),
+					csv(attributes.getOrDefault("gisid", "")),
+					csv(attributes.getOrDefault("source_layer", ""))
+				) + "\n");
+			}
+		} catch (IOException e) {
+			throw new RuntimeException("Error writing locations CSV", e);
+		}
+		LOG.info("Wrote {} spa and {} hospital locations to {}", SPAS.size(), hospitalLocations.size(), csvFile);
+	}
+
+	private static String csv(String value) {
+		if (value == null) {
+			return "";
+		}
+		if (value.contains(",") || value.contains("\"") || value.contains("\n")) {
+			return "\"" + value.replace("\"", "\"\"") + "\"";
+		}
+		return value;
+	}
+
+	private record Spa(String name, double x, double y, String district) {}
+
+	private static final List<Spa> SPAS = List.of(
+		new Spa("vabali", 795634.64, 5828763.74, "001_Mitte"),
+		new Spa("liquidrom", 797312.78, 5825825.94, "002_Friedrichshain-Kreuzberg"),
+		new Spa("meridian", 784623.35, 5828694.12, "005_Spandau"),
+		new Spa("aspria", 791428.73, 5825366.54, "004_Charlottenburg-Wilmersdorf"),
+		new Spa("hamam", 800182.05, 5825953.76, "002_Friedrichshain-Kreuzberg"),
+		new Spa("saunabad", 800320.0, 5829910.0, "003_Pankow"),
+		new Spa("kristall", 786190.0, 5791400.0, "NA (Ludwigsfelde)")
+	);
+
 	private record Hospital(String id, String name, double x, double y,
 	                        Map<String, String> attributes) {}
+
+	private static List<Hospital> hospitalLocations = new ArrayList<>();
 
 	private static final String WFS_NS = "http://www.opengis.net/wfs/2.0";
 	private static final String GML_NS = "http://www.opengis.net/gml/3.2";
@@ -429,6 +545,7 @@ public class RunPersonBasedAccBerlin {
 		List<Hospital> all = new ArrayList<>(plank.size() + weitere.size());
 		all.addAll(plank);
 		all.addAll(weitere);
+		hospitalLocations = all;
 
 		for (Hospital hospital : all) {
 			ActivityFacility facility = factory.createActivityFacility(
