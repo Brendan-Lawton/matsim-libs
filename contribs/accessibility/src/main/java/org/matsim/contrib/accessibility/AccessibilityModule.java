@@ -26,10 +26,12 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.locationtech.jts.geom.Envelope;
 import org.locationtech.jts.geom.Geometry;
+import org.matsim.api.core.v01.Coord;
 import org.matsim.api.core.v01.Id;
 import org.matsim.api.core.v01.Scenario;
 import org.matsim.api.core.v01.TransportMode;
 import org.matsim.api.core.v01.network.Network;
+import org.matsim.api.core.v01.population.Person;
 import org.matsim.contrib.accessibility.AccessibilityConfigGroup.AreaOfAccesssibilityComputation;
 import org.matsim.contrib.accessibility.AccessibilityConfigGroup.MeasurePointGeometryProvision;
 import org.matsim.contrib.accessibility.utils.GeoserverUpdater;
@@ -49,9 +51,11 @@ import org.matsim.core.trafficmonitoring.FreeSpeedTravelTime;
 import org.matsim.facilities.ActivityFacilities;
 import org.matsim.facilities.ActivityFacilitiesImpl;
 import org.matsim.facilities.ActivityFacility;
+import org.matsim.facilities.FacilitiesUtils;
 import org.matsim.facilities.MatsimFacilitiesReader;
 
-import com.google.inject.Provider;
+import jakarta.inject.Provider;
+import java.nio.file.Paths;
 import java.util.*;
 
 /**
@@ -59,12 +63,11 @@ import java.util.*;
  */
 public final class AccessibilityModule extends AbstractModule {
 	public static final String CONFIG_FILENAME_ACCESSIBILITY = "configUsedForAccessibilityComputation.xml";
-
 	private static final Logger LOG = LogManager.getLogger(AccessibilityModule.class);
 
-	private List<FacilityDataExchangeInterface> facilityDataListeners = new ArrayList<>() ;
+	private final List<DataExchangeInterface> dataListeners = new ArrayList<>() ;
 	private ActivityFacilities measuringPoints;
-	private Map<String, ActivityFacilities> additionalFacs = new TreeMap<>() ;
+	private final Map<String, ActivityFacilities> additionalFacs = new TreeMap<>() ;
 	private String activityType;
 	private boolean pushing2Geoserver = false;
 	private boolean createQGisOutput = false;
@@ -75,7 +78,7 @@ public final class AccessibilityModule extends AbstractModule {
 		OptionalBinder.newOptionalBinder(binder(), DrtEstimator.class);
 
 		MapBinder.newMapBinder(binder(), String.class, DvrpRoutingModule.AccessEgressFacilityFinder.class);
-		addControllerListenerBinding().toProvider(new AccessibilityControllerListenerProvider());
+		addControllerListenerBinding().toProvider(new AccessibilityControlerListenerProvider());
 	}
 
 	public final void setPushing2Geoserver(boolean pushing2Geoserver) {
@@ -86,15 +89,15 @@ public final class AccessibilityModule extends AbstractModule {
 		this.createQGisOutput = createQGisOutput;
 	}
 
-	public final void addFacilityDataExchangeListener(FacilityDataExchangeInterface listener) {
-		this.facilityDataListeners.add(listener) ;
+	public final void addFacilityDataExchangeListener(DataExchangeInterface listener) {
+		this.dataListeners.add(listener) ;
 	}
 
 	/**
 	 * Add additional facility data that will generate an additional column for each (x,y,t)-Entry. The facilities are aggregated to
 	 * the measurement points in downstream code.
 	 */
-	public void addAdditionalFacilityData(ActivityFacilities facilities) {
+	public void addAdditionalFacilityData(ActivityFacilities facilities) { // TDO cleanu up this method
 		if (facilities.getName() == null || facilities.getName().equals("")) {
 			throw new RuntimeException("Cannot add unnamed facility containers here. A key is required to identify them.") ;
 		}
@@ -111,10 +114,11 @@ public final class AccessibilityModule extends AbstractModule {
 		this.activityType = activityType ;
 	}
 
-	private class AccessibilityControllerListenerProvider implements Provider<ControllerListener> {
+	private class AccessibilityControlerListenerProvider implements Provider<ControllerListener> {
 		// yy not sure if this truly needs to be a provider.  kai, dec'16
 
-		@Inject private Config config ;
+		@Inject
+		private Config config ;
 		@Inject private Network network ;
 		@Inject private Scenario scenario;
 
@@ -125,14 +129,17 @@ public final class AccessibilityModule extends AbstractModule {
 		@Inject private Map<String, TravelDisutilityFactory> travelDisutilityFactories ;
 		@Inject private Map<String, TravelTime> travelTimes ;
 
-		@Inject TripRouter tripRouter;
+		@Inject
+		TripRouter tripRouter;
 
-		@Inject Map<String, DvrpRoutingModule.AccessEgressFacilityFinder> map;
+		@Inject
+		Map<String, DvrpRoutingModule.AccessEgressFacilityFinder> map;
 
-		@Inject Optional<DrtEstimator> drtEstimator;
+		@Inject
+		Optional<DrtEstimator> drtEstimator;
 
 		@Override
-			public ControllerListener get() {
+		public ControllerListener get() {
 			AccessibilityConfigGroup acg = ConfigUtils.addOrGetModule(scenario.getConfig(), AccessibilityConfigGroup.class);
 			ActivityFacilities opportunities = AccessibilityUtils.collectActivityFacilitiesWithOptionOfType(scenario, activityType);
 			final BoundingBox boundingBox;
@@ -174,6 +181,23 @@ public final class AccessibilityModule extends AbstractModule {
 				}
 				LOG.info("Using measuring points from facilities object.");
 
+			} else if (acg.getAreaOfAccessibilityComputation() == AreaOfAccesssibilityComputation.fromPopulation) {
+				boundingBox = BoundingBox.createBoundingBox(acg.getBoundingBoxLeft(), acg.getBoundingBoxBottom(), acg.getBoundingBoxRight(), acg.getBoundingBoxTop());
+				measuringPoints = FacilitiesUtils.createActivityFacilities("measuringPoints");
+				for (Person person : scenario.getPopulation().getPersons().values()) {
+					double homeX = (Double) person.getAttributes().getAttribute("homeX");
+					double homeY = (Double) person.getAttributes().getAttribute("homeY");
+
+					ActivityFacility facility = scenario.getActivityFacilities().getFactory().createActivityFacility(
+						Id.create(person.getId().toString(), ActivityFacility.class),
+						new Coord(homeX, homeY),
+						null
+					);
+
+					facility.getAttributes().putAttribute("person", person);
+
+					measuringPoints.addActivityFacility(facility);
+				}
 			} else { // This covers also the "fromNetwork" case
 				LOG.info("Using the boundary of the network file to determine the area for accessibility computation.");
 				LOG.warn("This can lead to memory issues when the network is large and/or the cell size is too fine!");
@@ -189,7 +213,9 @@ public final class AccessibilityModule extends AbstractModule {
 			}
 			AccessibilityUtils.assignAdditionalFacilitiesDataToMeasurePoint(measuringPoints, measurePointGeometryMap, additionalFacs);
 
-			String outputDirectory = scenario.getConfig().controller().getOutputDirectory() + "/analysis/accessibility/" + activityType;
+			String outputDirectory = Paths.get(scenario.getConfig().controller().getOutputDirectory())
+				.resolve("analysis/accessibility/" + activityType)
+				.toString();
 			AccessibilityComputationShutdownListener accessibilityShutdownListener = new AccessibilityComputationShutdownListener(scenario, measuringPoints, opportunities, outputDirectory);
 
 //				for (Modes4Accessibility mode : acg.getIsComputingMode()) {
@@ -199,13 +225,13 @@ public final class AccessibilityModule extends AbstractModule {
 					// freespeed car, special case
 					final TravelDisutilityFactory travelDisutilityFactory = travelDisutilityFactories.get(TransportMode.car);
 					Gbl.assertNotNull(travelDisutilityFactory);
-					calculator = new NetworkModeAccessibilityExpContributionCalculator(mode, new FreeSpeedTravelTime(), travelDisutilityFactory, scenario);
+					calculator = new NetworkModeAccessibilityExpContributionCalculator(mode, new FreeSpeedTravelTime(), travelDisutilityFactory, tripRouter,scenario);
 				} else if ( config.routing().getNetworkModes().contains( mode ) ) {
 					final TravelTime nwModeTravelTime = travelTimes.get(mode);
 					Gbl.assertNotNull(nwModeTravelTime);
 					final TravelDisutilityFactory nwModeTravelDisutility = travelDisutilityFactories.get(mode);
 					Gbl.assertNotNull( nwModeTravelDisutility );
-					calculator = new NetworkModeAccessibilityExpContributionCalculator(mode, nwModeTravelTime, nwModeTravelDisutility, scenario);
+					calculator = new NetworkModeAccessibilityExpContributionCalculator(mode, nwModeTravelTime, nwModeTravelDisutility, tripRouter,scenario);
 				} else if ( TransportMode.pt.equals( mode ) ){
 					calculator = new SwissRailRaptorAccessibilityContributionCalculator(mode, config.scoring(), scenario, tripRouter);
 				} else if ( Modes4Accessibility.estimatedDrt.name().equals( mode )) {
@@ -262,7 +288,7 @@ public final class AccessibilityModule extends AbstractModule {
 				accessibilityShutdownListener.addAdditionalFacilityData(fac);
 			}
 
-			for (FacilityDataExchangeInterface listener : facilityDataListeners) {
+			for (DataExchangeInterface listener : dataListeners) {
 				accessibilityShutdownListener.addFacilityDataExchangeListener(listener);
 			}
 

@@ -30,6 +30,8 @@ import org.matsim.api.core.v01.BasicLocation;
 import org.matsim.api.core.v01.Id;
 import org.matsim.api.core.v01.Scenario;
 import org.matsim.api.core.v01.TransportMode;
+import org.matsim.api.core.v01.population.Person;
+import org.matsim.api.core.v01.population.Population;
 import org.matsim.contrib.accessibility.utils.AggregationObject;
 import org.matsim.contrib.accessibility.utils.ProgressBar;
 import org.matsim.core.config.Config;
@@ -50,13 +52,14 @@ final class AccessibilityComputationShutdownListener implements ShutdownListener
 	private static final Logger LOG = LogManager.getLogger(AccessibilityComputationShutdownListener.class);
 
     private final ActivityFacilities measuringPoints;
+	private final Scenario scenario;
 	private ActivityFacilities opportunities;
 
 	private String outputDirectory;
 
 	private final Map<String, AccessibilityContributionCalculator> calculators = new LinkedHashMap<>();
-	private AccessibilityAggregator accessibilityAggregator;
-	private final ArrayList<FacilityDataExchangeInterface> zoneDataExchangeListeners = new ArrayList<>();
+	private DataExchangeInterface accessibilityAggregator;
+	private final ArrayList<DataExchangeInterface> zoneDataExchangeListeners = new ArrayList<>();
 
 	private Config config;
 	private AccessibilityConfigGroup acg;
@@ -70,21 +73,23 @@ final class AccessibilityComputationShutdownListener implements ShutdownListener
 
 		this.outputDirectory = outputDirectory;
 
+		this.scenario = scenario;
+
 		this.config = scenario.getConfig();
 
 		this.acg = ConfigUtils.addOrGetModule(scenario.getConfig(), AccessibilityConfigGroup.GROUP_NAME, AccessibilityConfigGroup.class);
 		this.cnScoringGroup = scenario.getConfig().scoring();
 
-		if (cnScoringGroup.getOrCreateDefaultModeParams(TransportMode.car).getMarginalUtilityOfDistance() != 0.) {
+		if (cnScoringGroup.getOrCreateModeParams(TransportMode.car).getMarginalUtilityOfDistance() != 0.) {
 			LOG.error("Marginal utility of distance for car different from zero, but not used in accessibility computations");
 		}
-		if (cnScoringGroup.getOrCreateDefaultModeParams(TransportMode.pt).getMarginalUtilityOfDistance() != 0.) {
+		if (cnScoringGroup.getOrCreateModeParams(TransportMode.pt).getMarginalUtilityOfDistance() != 0.) {
 			LOG.error("Marginal utility of distance for pt different from zero, but not used in accessibility computations");
 		}
-		if (cnScoringGroup.getOrCreateDefaultModeParams(TransportMode.bike).getMonetaryDistanceRate() != 0.) {
+		if (cnScoringGroup.getOrCreateModeParams(TransportMode.bike).getMonetaryDistanceRate() != 0.) {
 			LOG.error("Monetary distance cost rate for bike different from zero, but not used in accessibility computations");
 		}
-		if (cnScoringGroup.getOrCreateDefaultModeParams(TransportMode.walk).getMonetaryDistanceRate() != 0.) {
+		if (cnScoringGroup.getOrCreateModeParams(TransportMode.walk).getMonetaryDistanceRate() != 0.) {
 			LOG.error("Monetary distance cost rate for walk different from zero, but not used in accessibility computations");
 		}
 	}
@@ -97,9 +102,20 @@ final class AccessibilityComputationShutdownListener implements ShutdownListener
 		if (event.isUnexpected()) {
 			return;
 		}
+//	// consider refactoring the rest of this class into the method process and  call this from the simwrapper (see kelheim emissions dashboard)
 
+//		process();
+//	}
+//
+//	public void process() {
 		LOG.info("Initializing accessibility computation...");
-		accessibilityAggregator = new AccessibilityAggregator();
+
+		if(acg.isPersonBased()){
+			accessibilityAggregator = new AccessibilityAggregatorPersonBased();
+		}else {
+			accessibilityAggregator = new AccessibilityAggregator();
+
+		}
 		addFacilityDataExchangeListener(accessibilityAggregator);
 
 		if (outputDirectory != null) {
@@ -108,13 +124,40 @@ final class AccessibilityComputationShutdownListener implements ShutdownListener
 		}
 
 		LOG.info("Start computing accessibilities.");
+//		for (double timeOfDay : acg.getTimeOfDay()) {
 		computeAccessibilities(acg.getTimeOfDay(), opportunities);
+//		}
 		LOG.info("Finished computing accessibilities.");
 
-		writeCSVFile(outputDirectory);
+		if(acg.isPersonBased()){
+			writeCSVFilePersonBased(outputDirectory);
+		}else {
+			writeCSVFile(outputDirectory);
+		}
 		writePoiFile(outputDirectory);
 		writeConfigUsedForAccessibilityComputation(outputDirectory, config);
 
+	}
+
+	private void writePoiFile(String outputDirectory) {
+		LOG.info("Start writing POI output to " + outputDirectory + ".");
+
+		final CSVWriter writer = new CSVWriter(outputDirectory + "/" + CSVWriter.POI_FILE_NAME ) ;
+
+		// Write header
+//		writer.writeField(Labels.ID);
+		writer.writeField(Labels.X_COORDINATE);
+		writer.writeField(Labels.Y_COORDINATE);
+		writer.writeNewLine();
+
+		opportunities.getFacilities().values().forEach(facility -> {
+			writer.writeField(facility.getCoord().getX());
+			writer.writeField(facility.getCoord().getY());
+			writer.writeNewLine();
+		});
+
+		writer.close() ;
+		LOG.info("Finished writing POI output to " + outputDirectory + ".");
 	}
 
 
@@ -151,7 +194,9 @@ final class AccessibilityComputationShutdownListener implements ShutdownListener
 					for (final List<Id<? extends BasicLocation>> partition : partitions) {
 						tasks.add(() -> {
 							try {
+
 								compute(mode, departureTime, aggregatedOpportunities, aggregatedOrigins, partition, progressBar);
+
 							} catch (Exception e) {
 								throw new RuntimeException(e);
 							}
@@ -172,13 +217,17 @@ final class AccessibilityComputationShutdownListener implements ShutdownListener
 				} else {
 					LOG.info("Performing the computation without parallelization.");
 					ProgressBar progressBar = new ProgressBar(aggregatedOrigins.size());
-					compute(mode, departureTime, aggregatedOpportunities, aggregatedOrigins, aggregatedOriginIds, progressBar);
-				}
 
+					compute(mode, departureTime, aggregatedOpportunities, aggregatedOrigins, aggregatedOriginIds, progressBar);				}
+
+//				if (!mode.equals(Modes4Accessibility.pt.toString())) {
+//					break; //todo need to do something with this???
+//				}
 			}
-			for (FacilityDataExchangeInterface zoneDataExchangeInterface : this.zoneDataExchangeListeners) {
-				zoneDataExchangeInterface.finish();
-			}
+		}
+
+		for (DataExchangeInterface zoneDataExchangeInterface : this.zoneDataExchangeListeners) {
+			zoneDataExchangeInterface.finish();
 		}
 	}
 
@@ -218,32 +267,15 @@ final class AccessibilityComputationShutdownListener implements ShutdownListener
                     throw new IllegalArgumentException("No valid accessibility measure type chosen.");
                 }
 
-				for (FacilityDataExchangeInterface zoneDataExchangeInterface : this.zoneDataExchangeListeners) {
-					zoneDataExchangeInterface.setFacilityAccessibilities(origin, departureTime, mode, accessibility);
+				for (DataExchangeInterface zoneDataExchangeInterface : this.zoneDataExchangeListeners) {
+					if(acg.isPersonBased()){
+						((PersonDataExchangeInterface) zoneDataExchangeInterface).setPersonAccessibilities((Person) origin.getAttributes().getAttribute("person"), departureTime, mode, accessibility);
+					} else {
+						((FacilityDataExchangeInterface) zoneDataExchangeInterface).setFacilityAccessibilities(origin, departureTime, mode, accessibility);
+					}
 				}
 			}
 		}
-	}
-
-	private void writePoiFile(String outputDirectory) {
-		LOG.info("Start writing POI output to " + outputDirectory + ".");
-
-		final CSVWriter writer = new CSVWriter(outputDirectory + "/" + CSVWriter.POI_FILE_NAME ) ;
-
-		// Write header
-//		writer.writeField(Labels.ID);
-		writer.writeField(Labels.X_COORDINATE);
-		writer.writeField(Labels.Y_COORDINATE);
-		writer.writeNewLine();
-
-		opportunities.getFacilities().values().forEach(facility -> {
-			writer.writeField(facility.getCoord().getX());
-			writer.writeField(facility.getCoord().getY());
-			writer.writeNewLine();
-		});
-
-		writer.close() ;
-		LOG.info("Finished writing POI output to " + outputDirectory + ".");
 	}
 
 	private void writeConfigUsedForAccessibilityComputation(String adaptedOutputDirectory, Config config) {
@@ -257,7 +289,7 @@ final class AccessibilityComputationShutdownListener implements ShutdownListener
 	private void writeCSVFile(String adaptedOutputDirectory) {
 		LOG.info("Start writing accessibility output to " + adaptedOutputDirectory + ".");
 
-		Map<Tuple<ActivityFacility, Double>, Map<String,Double>> accessibilitiesMap = accessibilityAggregator.getAccessibilitiesMap();
+		Map<Tuple<ActivityFacility, Double>, Map<String,Double>> accessibilitiesMap = ((AccessibilityAggregator) accessibilityAggregator).getAccessibilitiesMap();
 		final CSVWriter writer = new CSVWriter(adaptedOutputDirectory + "/" + CSVWriter.FILE_NAME ) ;
 
 		// Write header
@@ -285,13 +317,65 @@ final class AccessibilityComputationShutdownListener implements ShutdownListener
 			for (String mode : getModes() ) {
 				// Defaulting to NaN allows accessibility calculations to be skipped for certain time slices for certain modes
 				final double value = accessibilitiesMap.get(tuple).getOrDefault(mode, Double.NaN);
-				writer.writeField(value);
+				if (!Double.isNaN(value)) {
+					writer.writeField(value);
+				} else {
+					writer.writeField(Double.NaN);
+				}
 			}
 			for (ActivityFacilities additionalDataFacilities : this.additionalFacilityData) { // Again: Iterate over all additional data collections
 				String additionalDataName = additionalDataFacilities.getName();
 				int value = (int) facility.getAttributes().getAttribute(additionalDataName);
 				writer.writeField(value);
 			}
+			writer.writeNewLine();
+		}
+		writer.close() ;
+		LOG.info("Finished writing accessibility output to " + adaptedOutputDirectory + ".");
+	}
+
+	private void writeCSVFilePersonBased(String adaptedOutputDirectory) {
+		LOG.info("Start writing accessibility output to " + adaptedOutputDirectory + ".");
+
+		Map<Tuple<Person, Double>, Map<String,Double>> accessibilitiesMap = ((AccessibilityAggregatorPersonBased) accessibilityAggregator).getAccessibilitiesMap();
+		final CSVWriter writer = new CSVWriter(adaptedOutputDirectory + "/" + CSVWriter.FILE_NAME ) ;
+
+		// Write header
+		writer.writeField(Labels.ID);
+//		writer.writeField(Labels.X_COORDINATE);
+//		writer.writeField(Labels.Y_COORDINATE);
+		writer.writeField(Labels.TIME);
+		for (String mode : getModes() ) {
+			writer.writeField(mode + "_accessibility");
+		}
+		for (ActivityFacilities additionalDataFacilities : this.additionalFacilityData) { // Iterate over all additional data collections
+			String additionalDataName = additionalDataFacilities.getName();
+			writer.writeField(additionalDataName);
+		}
+		writer.writeNewLine();
+
+		// Write data
+		for (Tuple<Person, Double> tuple : accessibilitiesMap.keySet()) {
+			Person person = tuple.getFirst();
+			writer.writeField(person.getId().toString());
+//			writer.writeField(facility.getCoord().getX());
+//			writer.writeField(facility.getCoord().getY());
+			writer.writeField(tuple.getSecond());
+
+			for (String mode : getModes() ) {
+				// Defaulting to NaN allows accessibility calculations to be skipped for certain time slices for certain modes
+				final double value = accessibilitiesMap.get(tuple).getOrDefault(mode, Double.NaN);
+				if (!Double.isNaN(value)) {
+					writer.writeField(value);
+				} else {
+					writer.writeField(Double.NaN);
+				}
+			}
+//			for (ActivityFacilities additionalDataFacilities : this.additionalFacilityData) { // Again: Iterate over all additional data collections
+//				String additionalDataName = additionalDataFacilities.getName();
+//				int value = (int) facility.getAttributes().getAttribute(additionalDataName);
+//				writer.writeField(value);
+//			}
 			writer.writeNewLine();
 		}
 		writer.close() ;
@@ -311,7 +395,7 @@ final class AccessibilityComputationShutdownListener implements ShutdownListener
 	}
 
 
-	public void addFacilityDataExchangeListener(FacilityDataExchangeInterface listener){
+	public void addFacilityDataExchangeListener(DataExchangeInterface listener){
 		this.zoneDataExchangeListeners.add(listener);
 	}
 

@@ -23,12 +23,17 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.matsim.api.core.v01.*;
 import org.matsim.api.core.v01.network.Network;
+import org.matsim.api.core.v01.population.Activity;
 import org.matsim.api.core.v01.population.Leg;
+import org.matsim.api.core.v01.population.Person;
 import org.matsim.api.core.v01.population.PlanElement;
 import org.matsim.contrib.accessibility.utils.AggregationObject;
+import org.matsim.contrib.accessibility.utils.Distances;
+import org.matsim.contrib.accessibility.utils.NetworkUtil;
 import org.matsim.core.config.ConfigUtils;
 import org.matsim.core.config.groups.ScoringConfigGroup;
 import org.matsim.core.gbl.Gbl;
+import org.matsim.core.network.NetworkUtils;
 import org.matsim.core.router.TripRouter;
 import org.matsim.core.utils.geometry.CoordUtils;
 import org.matsim.facilities.*;
@@ -56,6 +61,9 @@ class SwissRailRaptorAccessibilityContributionCalculator implements Accessibilit
 	private final double betaWalkTT_h;
 	private final double betaWalkDist_m;
 
+	private final double teleportedWalkSpeed_m_s;
+	private final AccessibilityConfigGroup acg;
+
 	Map<Id<? extends BasicLocation>, ArrayList<ActivityFacility>> aggregatedMeasurePoints;
     Map<Id<? extends BasicLocation>, AggregationObject> aggregatedOpportunities;
 
@@ -79,8 +87,13 @@ class SwissRailRaptorAccessibilityContributionCalculator implements Accessibilit
 		this.scenario = scenario;
 		this.tripRouter = tripRouter;
 
-		this.betaWalkTT_h = scoringConfigGroup.getDefaultModeParams().get(TransportMode.walk).getMarginalUtilityOfTraveling() - scoringConfigGroup.getDefaultPerforming_utils_hr();
-		this.betaWalkDist_m = scoringConfigGroup.getDefaultModeParams().get(TransportMode.walk).getMarginalUtilityOfDistance();
+		this.betaWalkTT_h = scoringConfigGroup.getModes().get(TransportMode.walk).getMarginalUtilityOfTraveling() - scoringConfigGroup.getPerforming_utils_hr();
+		this.betaWalkDist_m = scoringConfigGroup.getModes().get(TransportMode.walk).getMarginalUtilityOfDistance();
+
+		this.teleportedWalkSpeed_m_s = scenario.getConfig().routing().getTeleportedModeSpeeds().get(TransportMode.walk);
+//		this.acg = ConfigUtils.addOrGetModule(this.scenario.getConfig(), AccessibilityConfigGroup.GROUP_NAME, AccessibilityConfigGroup.class); this or the next one
+		acg = (AccessibilityConfigGroup) this.scenario.getConfig().getModules().get(AccessibilityConfigGroup.GROUP_NAME);
+
 	}
 
 
@@ -104,7 +117,7 @@ class SwissRailRaptorAccessibilityContributionCalculator implements Accessibilit
 
         // Prepare opportunities
         aggregatedOpportunities = new ConcurrentHashMap<>();
-        AccessibilityConfigGroup acg = ConfigUtils.addOrGetModule(scenario.getConfig(), AccessibilityConfigGroup.GROUP_NAME, AccessibilityConfigGroup.class);
+//        AccessibilityConfigGroup acg = ConfigUtils.addOrGetModule(scenario.getConfig(), AccessibilityConfigGroup.GROUP_NAME, AccessibilityConfigGroup.class);
         for (ActivityFacility opportunity : opportunities.getFacilities().values()) {
 
             // Find stops close to opportunity
@@ -146,6 +159,7 @@ class SwissRailRaptorAccessibilityContributionCalculator implements Accessibilit
             Map<Id<? extends BasicLocation>, AggregationObject> aggregatedOpportunities, Double departureTime) {
         double expSum = 0.;
 
+		Person person = null;
         final Map<Id<TransitStopFacility>, SwissRailRaptorCore.TravelInfo> idTravelInfoMap = raptor.calcTree(origin, departureTime, null, new AttributesImpl());
 
         for (final AggregationObject destination : aggregatedOpportunities.values()) {
@@ -153,13 +167,18 @@ class SwissRailRaptorAccessibilityContributionCalculator implements Accessibilit
 			// opportunities are clustered around nearest pt stop. Thus, can only calculate direct walk to the nearest stop and not to the opportunity itself.
 			ActivityFacility nearestStop = ((ActivityFacility) destination.getNearestBasicLocation());
 
-			List<? extends PlanElement> planElementsDirectWalk = tripRouter.calcRoute(TransportMode.walk, origin, nearestStop, departureTime, null, null);
-			Leg directWalkLeg = extractLeg(planElementsDirectWalk, TransportMode.walk);
-			double directWalkTime_h = directWalkLeg.getTravelTime().seconds() / 3600;
-			double directWalkDist_m = directWalkLeg.getRoute().getDistance();
-			double utilityDirectWalk = directWalkTime_h * betaWalkTT_h + directWalkDist_m * betaWalkDist_m +
-				AccessibilityUtils.getModeSpecificConstantForAccessibilities(TransportMode.walk, scoringConfigGroup);
+			//todo alternative more efficient - teleportedwalkutility
+			double teleportedWalkDist_m = NetworkUtils.getEuclideanDistance(origin.getCoord(), nearestStop.getCoord())*1.3; //todo euclideandistance/beeline factor
+			double teleportedWalkTime_h = teleportedWalkDist_m/teleportedWalkSpeed_m_s/3600;
+			double utilityTeleportedWalk = teleportedWalkTime_h * betaWalkTT_h + teleportedWalkDist_m * betaWalkDist_m + AccessibilityUtils.getModeSpecificConstantForAccessibilities(TransportMode.walk, scoringConfigGroup);
 
+
+//			List<? extends PlanElement> planElementsDirectWalk = tripRouter.calcRoute(TransportMode.walk, origin, nearestStop, departureTime, null, null);
+//			Leg directWalkLeg = extractLeg(planElementsDirectWalk, TransportMode.walk);
+//			double directWalkTime_h = directWalkLeg.getTravelTime().seconds() / 3600;
+//			double directWalkDist_m = directWalkLeg.getRoute().getDistance();
+//			double utilityDirectWalk = directWalkTime_h * betaWalkTT_h + directWalkDist_m * betaWalkDist_m +
+//				AccessibilityUtils.getModeSpecificConstantForAccessibilities(TransportMode.walk, scoringConfigGroup);
 
 			// now, we take the collection of stops near the "nearestStop", and find the one which offers the highest utility.
             double travelUtility = -Double.MAX_VALUE;
@@ -180,7 +199,7 @@ class SwissRailRaptorAccessibilityContributionCalculator implements Accessibilit
             }
 
             //check whether direct walk time is cheaper
-			travelUtility = Math.max(travelUtility, utilityDirectWalk);
+			travelUtility = Math.max(travelUtility, utilityTeleportedWalk); //change back to utilityDirectWalk
 
 			expSum += Math.exp(this.scoringConfigGroup.getBrainExpBeta() * travelUtility);
 

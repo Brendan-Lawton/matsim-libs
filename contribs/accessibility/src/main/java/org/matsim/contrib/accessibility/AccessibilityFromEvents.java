@@ -43,9 +43,8 @@ public final class AccessibilityFromEvents{
 		private final List<String> actTypes;
 		private DrtEstimator drtEstimator;
 		private Scenario scenario;
-		// events file is required to calculate congestion levels on network, which would affect the accessibility of modes like car & drt, which are routed on the network
 		private String eventsFile;
-		private final List<FacilityDataExchangeInterface> dataListeners = new ArrayList<>() ;
+		private final List<DataExchangeInterface> dataListeners = new ArrayList<>() ;
 
 		public Builder( Scenario scenario, String eventsFile) {
 			this(scenario, eventsFile, null);
@@ -57,13 +56,21 @@ public final class AccessibilityFromEvents{
 			this.drtEstimator = null;
 		}
 
-		public void setDrtEstimator(DrtEstimator drtEstimator) {
+		public void addDrtEstimator(DrtEstimator drtEstimator) {
 			this.drtEstimator = drtEstimator;
+		}
+
+		/**
+		 * @deprecated use {@link #addDrtEstimator(DrtEstimator)} instead
+		 */
+		@Deprecated
+		public void setDrtEstimator(DrtEstimator drtEstimator) {
+			addDrtEstimator(drtEstimator);
 		}
 
 
 
-		public void addDataListener( FacilityDataExchangeInterface dataListener ) {
+		public void addDataListener(DataExchangeInterface dataListener ) {
 			dataListeners.add( dataListener ) ;
 		}
 		public AccessibilityFromEvents build() {
@@ -73,9 +80,9 @@ public final class AccessibilityFromEvents{
 
 	private final Scenario scenario;
 	private final String eventsFile;
-	private final List<FacilityDataExchangeInterface> dataListeners ;
+	private final List<DataExchangeInterface> dataListeners ;
 
-	private AccessibilityFromEvents(Scenario scenario, String eventsFile, List<FacilityDataExchangeInterface> dataListeners, List<String> actType, DrtEstimator drtEstimator) {
+	private AccessibilityFromEvents(Scenario scenario, String eventsFile, List<DataExchangeInterface> dataListeners, List<String> actType, DrtEstimator drtEstimator) {
 		this.scenario = scenario;
 		this.eventsFile = eventsFile;
 		this.dataListeners = dataListeners;
@@ -179,7 +186,7 @@ public final class AccessibilityFromEvents{
 				// install the accessiblity module:
 				if (actTypes == null || actTypes.isEmpty()) {
 					final AccessibilityModule module = new AccessibilityModule();
-					for( FacilityDataExchangeInterface dataListener : dataListeners ){
+					for( DataExchangeInterface dataListener : dataListeners ){
 						module.addFacilityDataExchangeListener( dataListener );
 					}
 					install( module );
@@ -189,8 +196,8 @@ public final class AccessibilityFromEvents{
 						if (actType != null) {
 							module.setConsideredActivityType(actType);
 						}
-						for( FacilityDataExchangeInterface dataListener : dataListeners ){
-							module.addFacilityDataExchangeListener( dataListener );
+						for( DataExchangeInterface dataListener : dataListeners ){
+							module.addFacilityDataExchangeListener(dataListener);
 						}
 						install( module);
 					}
@@ -201,17 +208,17 @@ public final class AccessibilityFromEvents{
 
 		com.google.inject.Injector injector = Injector.createInjector( scenario.getConfig() , module );
 
-		// The following is more awkward than it should be because of Java type erasure; essentially, it says ...getInstance( Set<ControlerListener>.class ):
-		Set<ControllerListener> result = injector.getInstance( Key.get(new TypeLiteral<Set<ControllerListener>>(){} ) );
+		// The following is more awkward than it should be because of Java type erasure; essentially, it says ...getInstance( Set<ControllerListener>.class ):
+		Set<ControllerListener> result = injector.getInstance( Key.get( new TypeLiteral<Set<ControllerListener>>(){} ) );
 
-		// We do not have named ControlerListeners, so we have to go through all of them (if the AccessibilityListener had a class name, then one might
+		// We do not have named ControllerListeners, so we have to go through all of them (if the AccessibilityListener had a class name, then one might
 		// be able to get around that):
-		for( ControllerListener controllerListener : result ) {
-			if ( controllerListener instanceof ShutdownListener ) {
+		for( ControllerListener controlerListener : result ) {
+			if ( controlerListener instanceof ShutdownListener ) {
 				MatsimServices controler = null ;
 				boolean unexpected = false ;
-				ShutdownEvent shutdownEvent = new ShutdownEvent( controler, unexpected, 0, null) ;
-				((ShutdownListener) controllerListener).notifyShutdown( shutdownEvent );
+				ShutdownEvent shutdownEvent = new ShutdownEvent( controler, unexpected, 0, null ) ;
+				((ShutdownListener) controlerListener).notifyShutdown( shutdownEvent );
 			}
 		}
 	}

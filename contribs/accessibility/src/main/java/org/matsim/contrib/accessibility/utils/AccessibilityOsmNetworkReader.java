@@ -19,22 +19,20 @@
 
 package org.matsim.contrib.accessibility.utils;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.Set;
-
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.matsim.api.core.v01.TransportMode;
 import org.matsim.api.core.v01.network.Network;
 import org.matsim.core.config.ConfigUtils;
 import org.matsim.core.controler.OutputDirectoryLogging;
-import org.matsim.core.network.NetworkUtils;
+import org.matsim.core.network.algorithms.NetworkCleaner;
 import org.matsim.core.network.io.NetworkWriter;
 import org.matsim.core.scenario.ScenarioUtils;
 import org.matsim.core.utils.geometry.CoordinateTransformation;
 import org.matsim.core.utils.geometry.transformations.TransformationFactory;
 import org.matsim.core.utils.io.OsmNetworkReader;
+
+import java.io.IOException;
+import java.io.InputStream;
 
 /**
  * @author dziemke
@@ -151,7 +149,7 @@ public class AccessibilityOsmNetworkReader {
 			throw new IllegalArgumentException("Either the input stream OR the input file should be defined, but not both.");
 		}
 		
-		NetworkUtils.cleanNetwork(network, Set.of(TransportMode.car));
+		new NetworkCleaner().run(network);
 	}
 	
 	public void writeNetwork(String outputRoot, String networkFileName) {

@@ -67,6 +67,10 @@ public class ActivityFacilitiesImpl implements ActivityFacilities, SearchableAct
 		this.factory = new ActivityFacilitiesFactoryImpl();
 	}
 
+	public ActivityFacilitiesImpl() {
+		this(null);
+	}
+
 	//////////////////////////////////////////////////////////////////////
 	// create methods
 	//////////////////////////////////////////////////////////////////////

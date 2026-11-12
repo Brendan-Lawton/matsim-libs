@@ -21,7 +21,10 @@ package org.matsim.contrib.accessibility;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.matsim.api.core.v01.*;
+import org.matsim.api.core.v01.BasicLocation;
+import org.matsim.api.core.v01.Id;
+import org.matsim.api.core.v01.Scenario;
+import org.matsim.api.core.v01.TransportMode;
 import org.matsim.api.core.v01.network.Link;
 import org.matsim.api.core.v01.network.Network;
 import org.matsim.api.core.v01.network.Node;
@@ -79,7 +82,7 @@ final class ConstantSpeedAccessibilityExpContributionCalculator implements Acces
 		this.config = scenario.getConfig();
 		final ScoringConfigGroup scoringConfigGroup = config.scoring() ;
 
-		if (scoringConfigGroup.getOrCreateDefaultModeParams(mode).getMonetaryDistanceRate() != 0.) {
+		if (scoringConfigGroup.getOrCreateModeParams(mode).getMonetaryDistanceRate() != 0.) {
 			LOG.error("Monetary distance cost rate for " + mode + " different from zero, but not used in accessibility computations");
 		}
 
@@ -90,13 +93,13 @@ final class ConstantSpeedAccessibilityExpContributionCalculator implements Acces
 		}
 		this.modeSpeed_m_h = config.routing().getTeleportedModeSpeeds().get(mode) * 3600.;
 
-		final ScoringConfigGroup.ModeParams modeParams = scoringConfigGroup.getOrCreateDefaultModeParams(mode);
-		betaModeTT = modeParams.getMarginalUtilityOfTraveling() - scoringConfigGroup.getDefaultPerforming_utils_hr();
+		final ScoringConfigGroup.ModeParams modeParams = scoringConfigGroup.getOrCreateModeParams(mode);
+		betaModeTT = modeParams.getMarginalUtilityOfTraveling() - scoringConfigGroup.getPerforming_utils_hr();
 		betaModeTD = modeParams.getMarginalUtilityOfDistance();
 		constMode = modeParams.getConstant();
 
-		betaWalkTT = scoringConfigGroup.getDefaultModeParams().get(TransportMode.walk).getMarginalUtilityOfTraveling() - scoringConfigGroup.getDefaultPerforming_utils_hr();
-		betaWalkTD = scoringConfigGroup.getDefaultModeParams().get(TransportMode.walk).getMarginalUtilityOfDistance();
+		betaWalkTT = scoringConfigGroup.getModes().get(TransportMode.walk).getMarginalUtilityOfTraveling() - scoringConfigGroup.getPerforming_utils_hr();
+		betaWalkTD = scoringConfigGroup.getModes().get(TransportMode.walk).getMarginalUtilityOfDistance();
 		this.walkSpeed_m_h = config.routing().getTeleportedModeSpeeds().get(TransportMode.walk) * 3600;
 	}
 
@@ -114,7 +117,7 @@ final class ConstantSpeedAccessibilityExpContributionCalculator implements Acces
 			modeSet.add(mode);
 		}
 		filter.filter(subNetwork, modeSet);
-		if (subNetwork.getNodes().isEmpty()) {
+		if (subNetwork.getNodes().size() == 0) {
 			throw new RuntimeException("Network has 0 nodes for mode " + mode + ". Something is wrong.");
 		}
 		LOG.warn("sub-network for mode " + modeSet.toString() + " now has " + subNetwork.getNodes().size() + " nodes.");

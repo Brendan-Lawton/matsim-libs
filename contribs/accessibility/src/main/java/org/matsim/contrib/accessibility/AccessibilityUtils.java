@@ -39,7 +39,6 @@ import org.matsim.core.config.groups.ScoringConfigGroup;
 import org.matsim.core.gbl.Gbl;
 import org.matsim.core.network.NetworkUtils;
 import org.matsim.core.network.algorithms.TransportModeNetworkFilter;
-import org.matsim.core.router.TripStructureUtils;
 import org.matsim.core.utils.geometry.CoordUtils;
 import org.matsim.core.utils.gis.GeoFileReader;
 import org.matsim.facilities.*;
@@ -77,8 +76,8 @@ public class AccessibilityUtils {
 			double distance_m = NetworkUtils.getEuclideanDistance(opportunity.getCoord(), nearestNode.getCoord());
 
 			// in MATSim this is [utils/h]: cnScoringGroup.getTravelingWalk_utils_hr() - cnScoringGroup.getPerforming_utils_hr()
-			double walkBetaTT_utils_h = config.scoring().getDefaultModeParams().get(TransportMode.walk).getMarginalUtilityOfTraveling()
-					- config.scoring().getDefaultPerforming_utils_hr(); // default values: -12 = (-6.) - (6.)
+			double walkBetaTT_utils_h = config.scoring().getModes().get(TransportMode.walk).getMarginalUtilityOfTraveling()
+					- config.scoring().getPerforming_utils_hr(); // default values: -12 = (-6.) - (6.)
 			double VjkWalkTravelTime = walkBetaTT_utils_h * (distance_m / walkSpeed_m_h);
 
 			double expVjk = Math.exp(config.scoring().getBrainExpBeta() * VjkWalkTravelTime);
@@ -137,7 +136,7 @@ public class AccessibilityUtils {
 			modeSet.add(mode);
 		}
 		filter.filter(subNetwork, modeSet);
-		if (subNetwork.getNodes().isEmpty()) {throw new RuntimeException("Network has 0 nodes for mode " + mode + ". Something is wrong.");}
+		if (subNetwork.getNodes().size() == 0) {throw new RuntimeException("Network has 0 nodes for mode " + mode + ". Something is wrong.");}
 		LOG.warn("sub-network for mode " + modeSet.toString() + " now has " + subNetwork.getNodes().size() + " nodes.");
 		return subNetwork;
 	}
@@ -146,9 +145,9 @@ public class AccessibilityUtils {
 	public static double getModeSpecificConstantForAccessibilities(String mode, ScoringConfigGroup scoringConfigGroup) {
 		double modeSpecificConstant;
 		if (mode.equals(Modes4Accessibility.freespeed.name())) {
-			modeSpecificConstant = scoringConfigGroup.getDefaultModeParams().get(TransportMode.car).getConstant();
+			modeSpecificConstant = scoringConfigGroup.getModes().get(TransportMode.car).getConstant();
 		} else {
-			modeSpecificConstant = scoringConfigGroup.getDefaultModeParams().get(mode).getConstant();
+			modeSpecificConstant = scoringConfigGroup.getModes().get(mode).getConstant();
 		}
 		return modeSpecificConstant;
 	}
@@ -388,14 +387,12 @@ public class AccessibilityUtils {
 	}
 
 
-	// Extracts the single leg of a given mode from a plan. Throws an exception if there is not exactly one leg of this mode.
+	// TODO: check if this method is in TripStructureUtils. Otherwise say that here.
 	public static Leg extractLeg(List<? extends PlanElement> planElementsMain, String mode) {
-
-		List<Leg> legList = TripStructureUtils.getLegs(planElementsMain).stream().filter(leg -> leg.getMode().equals(mode)).toList();
+		List<Leg> legList = planElementsMain.stream().filter(pe -> pe instanceof Leg && ((Leg) pe).getMode().equals(mode)).map(pe -> (Leg) pe).toList();
 
 		if (legList.size() != 1) {
-			throw new RuntimeException("for these accessibility calculations, there should be exactly one leg of mode " + mode +
-				" in the plan. However, there are " + legList.size() + " legs of this mode.");
+			throw new RuntimeException("for these accessibility calculations, there should be exactly one leg");
 		}
 
 		return legList.get(0);

@@ -31,9 +31,7 @@ import org.matsim.api.core.v01.TransportMode;
 import org.matsim.api.core.v01.network.Link;
 import org.matsim.api.core.v01.network.Network;
 import org.matsim.api.core.v01.network.Node;
-import org.matsim.api.core.v01.population.Leg;
-import org.matsim.api.core.v01.population.PlanElement;
-import org.matsim.api.core.v01.population.Route;
+import org.matsim.api.core.v01.population.*;
 import org.matsim.contrib.accessibility.utils.AggregationObject;
 import org.matsim.contrib.accessibility.utils.Distances;
 import org.matsim.contrib.accessibility.utils.NetworkUtil;
@@ -46,11 +44,7 @@ import org.matsim.core.router.TripStructureUtils;
 import org.matsim.core.router.costcalculators.TravelDisutilityFactory;
 import org.matsim.core.router.util.TravelDisutility;
 import org.matsim.core.router.util.TravelTime;
-import org.matsim.facilities.ActivityFacilities;
-import org.matsim.facilities.ActivityFacilitiesFactory;
-import org.matsim.facilities.ActivityFacilitiesFactoryImpl;
-import org.matsim.facilities.ActivityFacility;
-import org.matsim.facilities.ActivityFacilityImpl;
+import org.matsim.facilities.*;
 import org.matsim.utils.objectattributes.attributable.AttributesImpl;
 
 /**
@@ -88,7 +82,7 @@ class TripRouterAccessibilityContributionCalculator implements AccessibilityCont
 		this.networkConfigGroup = scenario.getConfig().network();
 		this.scenario = scenario;
 
-		betaWalkTT = scoringConfigGroup.getDefaultModeParams().get(TransportMode.walk).getMarginalUtilityOfTraveling() - scoringConfigGroup.getDefaultPerforming_utils_hr();
+		betaWalkTT = scoringConfigGroup.getModes().get(TransportMode.walk).getMarginalUtilityOfTraveling() - scoringConfigGroup.getPerforming_utils_hr();
 
 		this.walkSpeed_m_s = scenario.getConfig().routing().getTeleportedModeSpeeds().get(TransportMode.walk);
 
@@ -152,13 +146,13 @@ class TripRouterAccessibilityContributionCalculator implements AccessibilityCont
 
 				// Note: The following computation where the end link length is added is only correct once the end link is removed from the route
 				// in the NetworkRoutingModule (route.setDistance(RouteUtils.calcDistance(route, 1.0, 0.0, this.network));)
-				if (this.scoringConfigGroup.getDefaultModeParams().get(leg.getMode()).getMarginalUtilityOfDistance() != 0.) {
+				if (this.scoringConfigGroup.getModes().get(leg.getMode()).getMarginalUtilityOfDistance() != 0.) {
 					LOG.warn("A computation including a marginal utility of distance will only be correct if the route time/distance" +
 							"inconsistency in the NetworkRoutingModule is solved.");
 				}
-				utility += (leg.getRoute().getDistance() + endLinkLength) * this.scoringConfigGroup.getDefaultModeParams().get(leg.getMode()).getMarginalUtilityOfDistance();
-				utility += (leg.getRoute().getTravelTime().seconds() + estimatedEndLinkTT) * this.scoringConfigGroup.getDefaultModeParams().get(leg.getMode()).getMarginalUtilityOfTraveling() / 3600.;
-				utility += -(leg.getRoute().getTravelTime().seconds() + estimatedEndLinkTT) * this.scoringConfigGroup.getDefaultPerforming_utils_hr() / 3600.;
+				utility += (leg.getRoute().getDistance() + endLinkLength) * this.scoringConfigGroup.getModes().get(leg.getMode()).getMarginalUtilityOfDistance();
+				utility += (leg.getRoute().getTravelTime().seconds() + estimatedEndLinkTT) * this.scoringConfigGroup.getModes().get(leg.getMode()).getMarginalUtilityOfTraveling() / 3600.;
+				utility += -(leg.getRoute().getTravelTime().seconds() + estimatedEndLinkTT) * this.scoringConfigGroup.getPerforming_utils_hr() / 3600.;
 			}
 
 			// Utility based on opportunities that are attached to destination node

@@ -2,15 +2,19 @@ package org.matsim.contrib.accessibility;
 
 import org.matsim.api.core.v01.BasicLocation;
 import org.matsim.api.core.v01.Id;
-import org.matsim.api.core.v01.TransportMode;
+import org.matsim.api.core.v01.Scenario;
+import org.matsim.api.core.v01.population.Activity;
 import org.matsim.api.core.v01.population.Leg;
+import org.matsim.api.core.v01.population.Person;
 import org.matsim.api.core.v01.population.PlanElement;
+import org.matsim.contrib.accessibility.accMods.*;
 import org.matsim.contrib.accessibility.utils.AggregationObject;
+import org.matsim.contrib.accessibility.utils.NetworkUtil;
 import org.matsim.core.config.groups.ScoringConfigGroup;
+import org.matsim.core.population.PersonUtils;
 import org.matsim.core.router.TripRouter;
-import org.matsim.facilities.ActivityFacilities;
-import org.matsim.facilities.ActivityFacility;
-import org.matsim.facilities.Facility;
+import org.matsim.core.scenario.ScenarioUtils;
+import org.matsim.facilities.*;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -19,7 +23,6 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import static org.matsim.contrib.accessibility.AccessibilityUtils.extractLeg;
 
-
 public class TeleportedModeContributionCalculator implements AccessibilityContributionCalculator {
 
 
@@ -27,10 +30,14 @@ public class TeleportedModeContributionCalculator implements AccessibilityContri
 	private final double betaTT_h;
 	private final double betaDist_m;
 	private final double asc;
-	TripRouter tripRouter ;
+	TripRouter tripRouter;
 	private Map<Id<? extends BasicLocation>, ArrayList<ActivityFacility>> aggregatedMeasurePoints;
 	private Map<Id<? extends BasicLocation>, AggregationObject> aggregatedOpportunities;
 	private ScoringConfigGroup scoringConfigGroup;
+
+	//todo for test accMods interface (pre + post)
+	private final List<pre_accModsInterface> pre_accMods = new ArrayList<>();
+	private final List<post_accModsInterface> post_accMods = new ArrayList<>();
 
 	TeleportedModeContributionCalculator(String mode, TripRouter tripRouter, ScoringConfigGroup scoringConfigGroup) {
 
@@ -38,9 +45,14 @@ public class TeleportedModeContributionCalculator implements AccessibilityContri
 		this.mode = mode;
 		this.scoringConfigGroup = scoringConfigGroup;
 
-		this.betaTT_h = scoringConfigGroup.getDefaultModeParams().get(mode).getMarginalUtilityOfTraveling() - scoringConfigGroup.getDefaultPerforming_utils_hr();
-		this.betaDist_m = scoringConfigGroup.getDefaultModeParams().get(mode).getMarginalUtilityOfDistance();
-		this.asc = scoringConfigGroup.getDefaultModeParams().get(mode).getConstant();
+		this.betaTT_h = scoringConfigGroup.getModes().get(mode).getMarginalUtilityOfTraveling() - scoringConfigGroup.getPerforming_utils_hr();
+		this.betaDist_m = scoringConfigGroup.getModes().get(mode).getMarginalUtilityOfDistance();
+		this.asc = scoringConfigGroup.getModes().get(mode).getConstant();
+
+		//todo register accMods here
+		pre_accMods.add(new age());
+//		post_accMods.add(new economic_status());
+//		post_accMods.add(new sex());
 
 	}
 
@@ -49,7 +61,7 @@ public class TeleportedModeContributionCalculator implements AccessibilityContri
 		this.aggregatedMeasurePoints = new ConcurrentHashMap<>();
 		for (ActivityFacility measuringPoint : measuringPoints.getFacilities().values()) {
 			Id<ActivityFacility> facilityId = measuringPoint.getId();
-			if(!aggregatedMeasurePoints.containsKey(facilityId)) {
+			if (!aggregatedMeasurePoints.containsKey(facilityId)) {
 				aggregatedMeasurePoints.put(facilityId, new ArrayList<>());
 			}
 			aggregatedMeasurePoints.get(facilityId).add(measuringPoint);
@@ -81,6 +93,10 @@ public class TeleportedModeContributionCalculator implements AccessibilityContri
 			Leg walkLeg = extractLeg(planElements, mode);
 			double teleportTime_h = walkLeg.getTravelTime().seconds() / 3600;
 			double teleportDist_m = walkLeg.getRoute().getDistance();
+			//todo applying pre accMods using interface (age) disabled for now
+//			for (pre_accModsInterface mods : pre_accMods){
+//				teleportTime_h = mods.apply((Person) origin.getAttributes().getAttribute("person"), teleportTime_h, teleportDist_m);
+//			}
 			double utilityTeleport = teleportTime_h * betaTT_h + teleportDist_m * betaDist_m + asc;
 			expSum += Math.exp(this.scoringConfigGroup.getBrainExpBeta() * utilityTeleport);
 		}
@@ -88,6 +104,50 @@ public class TeleportedModeContributionCalculator implements AccessibilityContri
 		return expSum;
 
 
+	}
+
+	// kept as an example for later
+	public double computeContributionOfOpportunityPerson(Person person, Map<Id<? extends BasicLocation>, AggregationObject> aggregatedOpportunities, Double departureTime) {
+
+
+		double expSum = 0.;
+
+		for (AggregationObject destination : aggregatedOpportunities.values()) {
+
+			Facility opportunity = (Facility) destination.getNearestBasicLocation();
+
+			Facility homeFacility = FacilitiesUtils.wrapActivity((Activity) person.getSelectedPlan().getPlanElements().get(0));
+			List<? extends PlanElement> planElements = tripRouter.calcRoute(mode, homeFacility, opportunity, departureTime, null, null);
+			Leg walkLeg = extractLeg(planElements, mode);
+			double teleportTime_h = walkLeg.getTravelTime().seconds() / 3600;
+			double teleportDist_m = walkLeg.getRoute().getDistance();
+			double departureTime_h = walkLeg.getDepartureTime().seconds() / 3600; //todo added departureTime_h
+
+			//todo applying pre accMods using interface (age) disabled for now
+//			for (pre_accModsInterface mods : pre_accMods){
+//				teleportTime_h = mods.apply(person, teleportTime_h, teleportDist_m);
+//			}
+
+			//test push
+			//todo base utility (for other modes, add betaMoney etc.)
+			double utilityTeleport = teleportTime_h * betaTT_h + teleportDist_m * betaDist_m + asc; // here can play around with weights
+			//	betaTT_h	= marginal utility of travel time (-)
+			//	betaDist_m	= marginal utility of distance (-)
+			//	asc			= mode specific constant
+
+			//todo per-opportunity accessibility score
+			double contribution = Math.exp(this.scoringConfigGroup.getBrainExpBeta() * utilityTeleport);
+
+			//todo applying post accMods using interface (economic_status, sex)
+//			for (post_accModsInterface mods : post_accMods){
+//				contribution = mods.apply(person, teleportTime_h, teleportDist_m, departureTime_h, contribution);
+//			}
+
+			//todo total accessibility including economic_status penalty
+			expSum += contribution;
+		}
+
+		return expSum;
 	}
 
 	@Override
@@ -107,4 +167,5 @@ public class TeleportedModeContributionCalculator implements AccessibilityContri
 		copy.aggregatedMeasurePoints = this.aggregatedMeasurePoints;
 		return copy;
 	}
+
 }
